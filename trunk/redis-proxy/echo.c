@@ -1,8 +1,12 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <poll.h>
 #include "redis.h"
 #include "anet.h"
+
+#define CONN_ERR "-ERR: Connection error\r\n"
+#define CONN_ERR_LEN 24
 
 static int connectRedis() {
     int fd=anetTcpConnect(NULL, "localhost", 6379);
@@ -33,7 +37,7 @@ int validSingleLineResponseBuffer(char *rbuf,int rlen) {
     if( rlen < 3 || rbuf[rlen-2] != '\r'|| rbuf[rlen-1] != '\n' ) {
         return 0;
     }
-    rbuf++; // '+'
+    //rbuf++; // '+'
     char *p=strstr(rbuf,"\r\n");
     if(p - rbuf + 2 != rlen) {
         return -1;
@@ -50,7 +54,7 @@ int validErrorMsgResponseBuffer(char *rbuf,int rlen) {
     if( rlen < 3 || rbuf[rlen-2] != '\r'|| rbuf[rlen-1] != '\n' ) {
         return 0;
     }
-    rbuf++; // '+'
+    //rbuf++; // '-'
     char *p=strstr(rbuf,"\r\n");
     if(p - rbuf + 2 != rlen) {
         return -1;
@@ -67,7 +71,7 @@ int validIntegerReplyResponseBuffer(char *rbuf,int rlen) {
     if( rlen < 3 || rbuf[rlen-2] != '\r'|| rbuf[rlen-1] != '\n' ) {
         return 0;
     }
-    rbuf++; // '+'
+    //rbuf++; // ':'
     char *p=strstr(rbuf,"\r\n");
     if(p - rbuf + 2 != rlen) {
         return -1;
@@ -78,6 +82,7 @@ int validIntegerReplyResponseBuffer(char *rbuf,int rlen) {
 }
 
 int validBulkReplyResponseBuffer(char *rbuf,int rlen) {
+    char *op=rbuf;
     if(rbuf[0] != '$') {
         return -1;
     }
@@ -88,29 +93,33 @@ int validBulkReplyResponseBuffer(char *rbuf,int rlen) {
     char slen[11];
     int ilen;
     memset(slen,0,11);
-    p=strstr(rbuf,"\r\n");
+    char *p=strstr(rbuf,"\r\n");
     strncpy(slen,rbuf,p-rbuf);
     rbuf=p;
     rbuf+=2; //"\r\n"
     ilen=atoi(slen);
     if(ilen == -1) {
-        rbuf+=0
+        rbuf+=0;
     } else {
         rbuf+=ilen+2; // data and "\r\n"
     }
     
-    if(rbuf - (c->rbuf) > c->rlen) {
+    if(rbuf - op > rlen) {
         return 0; // we need the next bulk.
     }
-    if(rbuf -> (c->rbuf) == c->rlen) {
+    if(rbuf - op == rlen) {
         return 1;
     }
-    if(rbuf -> (c->rbuf) < c->rlen) {
+    if(rbuf - op < rlen) {
         return -1;
     }
 }
 
+/*
+*2\r\n$-1\r\n$3\r\n456\r\n
+*/
 int validMultiBuckResponseBuffer(char *rbuf,int rlen) {
+    char *op=rbuf;
     if( rbuf[0] != '*' ) {
         return -1;
     }
@@ -126,11 +135,14 @@ int validMultiBuckResponseBuffer(char *rbuf,int rlen) {
     rbuf=p;
     rbuf+=2; // "\r\n"
     argc=atoi(slen);
-    if(argc <= 0 || argc > 1024) {
+    if(argc < 0 || argc > 1024) {
         return -1;
     }
-    if(rbuf - (c->rbuf) >= c->rlen) {
-        return 0; // we need more data.
+    if( argc == 0 && rbuf - op == rlen) {
+        return 1; // we need more data.
+    }
+    if( argc != 0 && rbuf - op == rlen ) {
+        return 0;
     }
     for(; argc > 0; argc--) {
         if(rbuf[0] != '$') {
@@ -145,19 +157,20 @@ int validMultiBuckResponseBuffer(char *rbuf,int rlen) {
         ilen=atoi(slen);
         if(ilen == -1) {
             rbuf+=0;
+        } else {
+            rbuf+=ilen+2; // data and "\r\n"
         }
-        rbuf+=ilen+2; // data and "\r\n"
-        if(rbuf - (c->rbuf) > c->rlen) {
+        if(rbuf - op > rlen) {
             return 0; // we need the next bulk.
         }
-        if(rbuf - (c->rbuf) == c->rlen && argc != 1) { // not the last bulk
+        if(rbuf - op == rlen && argc != 1) { // not the last bulk
             return 0;
         }
     }
-    if(rbuf - (c->rbuf ) != c->rlen) {
+    if(rbuf - op != rlen) {
         return -1;
     } else {
-        return 1
+        return 1;
     }
     return -1;   
 }
@@ -195,29 +208,65 @@ void _redisCommandProc(redisClient *c,void **privptr) {
     if(*fd == -1) {
         *fd=connectRedis();
         if(*fd == -1) {
-            strcpy(c->wbuf,"*-1\r\n");
-            c->wlen=5;
+            memset(c->wbuf,0,sizeof(c->wbuf));
+            strcpy(c->wbuf,CONN_ERR);
+            c->wlen=CONN_ERR_LEN;
             return;
         }
     }
-    int size=anetWrite(*fd, c->rbuf, c->rlen);
-    if(size == -1 || size == 0) {
+    int size;
+    struct pollfd pfd;
+    pfd.fd=*fd;
+    pfd.events = POLLOUT;
+    if(poll(&pfd,1,100) > 0) {
+        size=write(*fd, c->rbuf, c->rlen);
+    } else {
         close(*fd);
-        *fd=connectRedis();
-        strcpy(c->wbuf,"*-1\r\n");
-        c->wlen=5;
+        *fd=-1;
+        memset(c->wbuf,0,sizeof(c->wbuf));
+        strcpy(c->wbuf,CONN_ERR);
+        c->wlen=CONN_ERR_LEN;
         return;
     }
-    size=read(*fd,c->wbuf,1024);
+    if(size != c->rlen) {
+        close(*fd);
+        *fd=-1;
+        memset(c->wbuf,0,sizeof(c->wbuf));
+        strcpy(c->wbuf,CONN_ERR);
+        c->wlen=CONN_ERR_LEN;
+        return;
+    }
+    pfd.events = POLLIN;
+    if(poll(&pfd,1,100) > 0) {
+        size=read(*fd,c->wbuf,WRITE_BUF_LEN);
+    } else {
+        close(*fd);
+        *fd=-1;
+        memset(c->wbuf,0,sizeof(c->wbuf));
+        strcpy(c->wbuf,CONN_ERR);
+        c->wlen=CONN_ERR_LEN;
+        return;
+    }
     if(size == -1 || size == 0 ) {
         close(*fd);
-        *fd=connectRedis();
-        strcpy(c->wbuf,"*-1\r\n");
-        c->wlen=5;
+        *fd=-1;
+        strcpy(c->wbuf,CONN_ERR);
+        c->wlen=CONN_ERR_LEN;
         return;
-    } else {
-        c->wlen=size;
     }
+    c->wlen=size;
+	int v=validResponseBuffer(c->wbuf,c->wlen);
+	if(v == 1) {
+	    return;
+	}
+	if(v == -1 || v == 0) {
+        close(*fd);
+        *fd=-1;
+        memset(c->wbuf,0,sizeof(c->wbuf));
+        strcpy(c->wbuf,CONN_ERR);
+        c->wlen=CONN_ERR_LEN;
+        return;
+	}
     return;
 }
 

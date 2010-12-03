@@ -1,11 +1,12 @@
 #include <time.h>
-#define READ_BUF_LEN 128
-#define WRITE_BUF_LEN 128
+#define READ_BUF_LEN 1024
+#define WRITE_BUF_LEN 4096
 
 struct RedisClient {
 	int fd;
 	char rbuf[READ_BUF_LEN];
 	char wbuf[WRITE_BUF_LEN];
+	char *extwbuf;
 	int rlen;
 	int wlen;
 	int wpos;

@@ -82,6 +82,7 @@ struct RedisServer {
     time_t unixtime;    /* Unix time sampled every second. */
     int shutdown_asap;
     pthread_mutex_t io_mutex; /* lock to access io_jobs/io_done/io_thread_job */
+    pthread_cond_t io_ready;
     pthread_attr_t io_threads_attr; /* attributes for threads creation */
     int io_ready_pipe_write;
     int io_ready_pipe_read;
@@ -106,13 +107,15 @@ static void spawnIOThread(void);
 static void queueIOJob(redisClient *c);
 static void sendReplyToClient(aeEventLoop *el, int fd, void *privdata, int mask);
 static void beforeSleep(struct aeEventLoop *eventLoop);
-static int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData);
+//static int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData);
 static void sigtermHandler(int sig);
 static void segvHandler(int sig, siginfo_t *info, void *secret);
 static void freeClient(redisClient *c);
 static void resetClient(redisClient *c);
 //static void processCommand(redisClient *c,vod *privptr);
 static void vmThreadedIOCompletedJob(aeEventLoop *el, int fd, void *privdata,int mask);
+static void noticeThreadedIO(void);
+static void waitThreadedIO(void);
 static void lockThreadedIO(void);
 static void unlockThreadedIO(void);
 static void oom(const char *msg);
@@ -218,6 +221,7 @@ static redisClient *createClient(int fd) {
     return c;
 }
 
+/*
 static int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
     server.cronloops++;
     REDIS_NOTUSED(eventLoop);
@@ -226,7 +230,7 @@ static int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientD
     server.unixtime = time(NULL);
     return 100;
 }
-
+*/
 static void readQueryFromClient(aeEventLoop *el, int fd, void *privdata, int mask) {
     redisClient *c = (redisClient*) privdata;
     char buf[READ_BUF_LEN];
@@ -281,15 +285,17 @@ myvalue\r\n
 */
 
 int validRequestBuffer(char *rbuf,int rlen) {
-    if( rbuf[0] != '*' ) {
-        return -1;
-    }
+    char *op=rbuf;
     if( rlen < 3 || rbuf[rlen-2] != '\r'|| rbuf[rlen-1] != '\n' ) {
         return 0;
     }
-    rbuf++; // '*'
     char slen[11];
     int argc,ilen;
+    memset(slen,0,11);
+    if( rbuf[0] != '*' ) { //possibly old protocol command
+        return 1;
+    }
+    rbuf++; // '*'
     memset(slen,0,11);
     char *p=strstr(rbuf,"\r\n");
     strncpy(slen,rbuf,p-rbuf);
@@ -299,7 +305,7 @@ int validRequestBuffer(char *rbuf,int rlen) {
     if(argc <= 0 || argc > 1024) {
         return -1;
     }
-    if(rbuf - (c->rbuf) >= c->rlen) {
+    if(rbuf - op >= rlen) {
         return 0; // we need more data.
     }
     for(; argc > 0; argc--) {
@@ -315,25 +321,26 @@ int validRequestBuffer(char *rbuf,int rlen) {
         ilen=atoi(slen);
         if(ilen == -1) {
             ilen=0;
+        } else {
+            rbuf+=ilen+2; // data and "\r\n"
         }
-        rbuf+=ilen+2; // data and "\r\n"
-        if(rbuf - (c->rbuf) > c->rlen) {
+        if(rbuf - op > rlen) {
             return 0; // we need the next bulk.
         }
-        if(rbuf - (c->rbuf) == c->rlen && argc != 1) { // not the last bulk
+        if(rbuf - op == rlen && argc != 1) { // not the last bulk
             return 0;
         }
     }
-    if(rbuf - (c->rbuf ) != c->rlen) {
+    if(rbuf - op != rlen) {
         return -1;
     } else {
-        return 1
+        return 1;
     }
     return -1;   
 }
 
 static void processInputBuffer(redisClient *c) {
-    int v=validRequestBuffer(char *rbuf,int rlen);
+    int v=validRequestBuffer(c->rbuf,c->rlen);
     if(v == -1) {
         redisLog(REDIS_VERBOSE, "Client Protocol Error");
         freeClient(c);
@@ -357,7 +364,7 @@ static void initServerConfig() {
     server.pidfile = "/var/run/redis.pid";
     server.maxclients = 0;
     server.shutdown_asap = 0;
-    server.vm_max_threads = 10;
+    server.vm_max_threads = 20;
     server.extension="./echo.so";
 }
 
@@ -387,7 +394,7 @@ static void initServer() {
     server.stat_numconnections = 0;
     server.stat_starttime = time(NULL);
     server.unixtime = time(NULL);
-    aeCreateTimeEvent(server.el, 1, serverCron, NULL, NULL);
+    //aeCreateTimeEvent(server.el, 1, serverCron, NULL, NULL);
     if (aeCreateFileEvent(server.el, server.fd, AE_READABLE,
         acceptHandler, NULL) == AE_ERR) oom("creating file event");
 
@@ -395,6 +402,7 @@ static void initServer() {
     server.io_newjobs = listCreate();
     server.io_processed = listCreate();
     pthread_mutex_init(&server.io_mutex,NULL);
+    pthread_cond_init(&server.io_ready,NULL);
     server.io_active_threads = 0;
     int pipefds[2];
     if (pipe(pipefds) == -1) {
@@ -405,7 +413,10 @@ static void initServer() {
     server.io_ready_pipe_read = pipefds[0];
     server.io_ready_pipe_write = pipefds[1];
     redisAssert(anetNonBlock(NULL,server.io_ready_pipe_read) != ANET_ERR);
-
+    int i;
+    for(i=0;i<server.vm_max_threads;i++) {
+        spawnIOThread();
+    }
     /* Listen for events in the threaded I/O pipe */
     if (aeCreateFileEvent(server.el, server.io_ready_pipe_read, AE_READABLE,
         vmThreadedIOCompletedJob, NULL) == AE_ERR)
@@ -441,7 +452,7 @@ static void vmThreadedIOCompletedJob(aeEventLoop *el, int fd, void *privdata, in
 
         /* Post process it in the main thread, as there are things we
          * can do just here to avoid race conditions and/or invasive locks */
-        redisLog(REDIS_DEBUG,"Got a job");
+        redisLog(REDIS_DEBUG,"Main thread got a job from processed queue.");
         if (aeCreateFileEvent(server.el, c->fd, AE_WRITABLE,
             sendReplyToClient, c) == AE_ERR) return;
     }
@@ -474,6 +485,7 @@ static void setupSigSegvAction(void) {
 static void sigtermHandler(int sig) {
     REDIS_NOTUSED(sig);
     redisLog(REDIS_WARNING,"SIGTERM received, scheduling shutting down...");
+    _exit(0);
     server.shutdown_asap = 1;
 }
 
@@ -496,7 +508,7 @@ static void freeClient(redisClient *c) {
     aeDeleteFileEvent(server.el,c->fd,AE_READABLE);
     aeDeleteFileEvent(server.el,c->fd,AE_WRITABLE);
     close(c->fd);
-    free(c);
+    if(c) free(c);
     server.clients--;
 }
 
@@ -539,10 +551,13 @@ static void resetClient(redisClient *c) {
 
 /* This function must be called while with threaded IO locked */
 static void queueIOJob(redisClient *c) {
-    redisLog(REDIS_DEBUG,"Queued IO Job ");
+    redisLog(REDIS_DEBUG,"Main thread put an IO Job to queue.");
+    lockThreadedIO();
     listAddNodeTail(server.io_newjobs,c);
-    if (server.io_active_threads < server.vm_max_threads)
-        spawnIOThread();
+    unlockThreadedIO();
+    noticeThreadedIO();
+    //if (server.io_active_threads < server.vm_max_threads)
+    //    spawnIOThread();
 }
 
 static void spawnIOThread(void) {
@@ -564,6 +579,14 @@ static void spawnIOThread(void) {
     server.io_active_threads++;
 }
 
+static void noticeThreadedIO(void) {
+    pthread_cond_signal(&server.io_ready);
+}
+
+static void waitThreadedIO(void) {
+    pthread_cond_wait(&server.io_ready,&server.io_mutex);
+}
+
 static void lockThreadedIO(void) {
     pthread_mutex_lock(&server.io_mutex);
 }
@@ -582,27 +605,23 @@ static void *IOThreadEntryPoint(void *arg) {
     while(1) {
         /* Get a new job to process */
         lockThreadedIO();
-        if (listLength(server.io_newjobs) == 0) {
+        while (listLength(server.io_newjobs) == 0) {
             /* No new jobs in queue, exit. */
-            redisLog(REDIS_DEBUG,"Thread %ld exiting, nothing to do",
+            redisLog(REDIS_DEBUG,"Thread %ld, nothing to do, just wait...",
                 (long) pthread_self());
-            server.io_active_threads--;
-            unlockThreadedIO();
-            (*extCmdDeinit)(&privptr);
-            return NULL;
+            waitThreadedIO();
         }
         ln = listFirst(server.io_newjobs);
         c = ln->value;
-        
         listDelNode(server.io_newjobs,ln);
         unlockThreadedIO();
-        redisLog(REDIS_DEBUG,"Got a new job ");
+        redisLog(REDIS_DEBUG,"Thread %ld got a new job to process",(long) pthread_self());
 
         /* Process the Job */
 	    (*extCmdProc)(c,&privptr);
 	
         /* Done: insert the job into the processed queue */
-        redisLog(REDIS_DEBUG,"Completed the job");
+        redisLog(REDIS_DEBUG,"Thread %ld completed the job",(long) pthread_self());
         lockThreadedIO();
         listAddNodeTail(server.io_processed,c);
         unlockThreadedIO();
