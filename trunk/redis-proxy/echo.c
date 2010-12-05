@@ -1,4 +1,5 @@
 #include <string.h>
+#include <strings.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <poll.h>
@@ -20,7 +21,7 @@ static inline int timeout(struct timeval begin) {
 }
 
 static inline int connectRedis() {
-    int fd=anetTcpNonBlockConnect(NULL, "localhost", 6379);
+    int fd=anetTcpConnect(NULL, "localhost", 6379);
     return fd;
 }
 
@@ -42,16 +43,19 @@ myvalue\r\n
 */
 
 int _processRequestBuffer(char *rbuf,int rlen) {
-    char *op=rbuf;
     if( rlen < 3 || rbuf[rlen-2] != '\r'|| rbuf[rlen-1] != '\n' ) {
         return 0;
     }
+    if( rbuf[0] != '*' ) { //possibly old protocol command
+        if(strcasecmp(rbuf,"quit\r\n") == 0) {
+            return -2;
+        }
+        return 1;
+    }
+    char *op=rbuf;
     char slen[11];
     int argc,ilen;
     memset(slen,0,11);
-    if( rbuf[0] != '*' ) { //possibly old protocol command
-        return 1;
-    }
     rbuf++; // '*'
     memset(slen,0,11);
     char *p=strstr(rbuf,"\r\n");
@@ -298,12 +302,14 @@ static inline void setClientError(redisClient *c) {
 }
 
 void _redisCommandProc(redisClient *c,void **privptr) {
-    int *fd,err;
+    int *fd,err,ntry=0,v;
     int nwrite,nread,rc;
     struct pollfd pfd;
     struct timeval begin;
     char *buf;
 
+again:
+    ntry++;
     fd=(int *)(*privptr);
     if(*fd == -1) {
         *fd=connectRedis();
@@ -337,9 +343,18 @@ void _redisCommandProc(redisClient *c,void **privptr) {
             if( errno == EAGAIN ) {
                 continue;
             } else {
-                err=1;
+                err=2;
                 break;
             }
+        }
+    }
+    if(err == 2 ) {
+        if(ntry < 2) {
+            close(*fd);
+            *fd=-1;
+            goto again;
+        } else {
+            err = 1;
         }
     }
     if(err == 1) {
@@ -348,6 +363,7 @@ void _redisCommandProc(redisClient *c,void **privptr) {
         setClientError(c);
         return;
     }
+
     pfd.events = POLLIN;
     pfd.revents = 0;
     gettimeofday(&begin,NULL);
@@ -369,28 +385,42 @@ void _redisCommandProc(redisClient *c,void **privptr) {
                 nread = 0;
                 continue;
             } else {
-                err=1;
+                err=2;
                 break;
             }
         }
         if (rc == 0) {
-            err=1;
+            err=2;
             break;
         }
         if (rc > 0) {
             c->wlen+=rc;
-            rc=_processResponseBuffer(c->wbuf,c->wlen);
-            if(rc == 1) {
+            v=_processResponseBuffer(c->wbuf,c->wlen);
+            if(v == 1) {
                 err=0;
                 break;
             }
-            if(rc == 0) {
+            if(v == 0) {
                 continue;
             }
-            if(rc == -1) {
+            if(v == -1) {
                 err=1;
                 break;
             }
+        }
+    }
+    if(err == 2 ) {
+        if( ntry < 2) {
+            close(*fd);
+            *fd=-1;
+            if(c->wbuf) {
+                free(c->wbuf);
+                c->wbuf=NULL;
+            }
+            c->wlen=0;
+            goto again;
+        } else {
+            err=1;
         }
     }
     if(err == 1) {

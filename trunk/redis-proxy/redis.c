@@ -283,17 +283,21 @@ static void processInputBuffer(redisClient *c) {
         freeClient(c);
         return;
     }
+    if(v == -2) { //QUIT command
+        freeClient(c);
+    }
     if(v == 0) {
         return;
     }
     if(v == 1) {
+        aeDeleteFileEvent(server.el,c->fd,AE_READABLE);
         queueIOJob(c);
     }
 }
 
 static void initServerConfig() {
     server.port = REDIS_SERVERPORT;
-    server.verbosity = REDIS_DEBUG;
+    server.verbosity = REDIS_FATAL;
     server.maxidletime = REDIS_MAXIDLETIME;
     server.logfile = NULL; /* NULL = log on standard output */
     server.bindaddr = NULL;
@@ -301,7 +305,7 @@ static void initServerConfig() {
     server.pidfile = "/var/run/redis.pid";
     server.maxclients = 0;
     server.shutdown_asap = 0;
-    server.vm_max_threads = 20;
+    server.vm_max_threads = 10;
     server.extension="./echo.so";
 }
 
@@ -447,12 +451,15 @@ static void freeClient(redisClient *c) {
     close(c->fd);
     if(c->rbuf) {
         free(c->rbuf);
+        c->wbuf=NULL;
     }
     if(c->wbuf) {
         free(c->wbuf);
+        c->wbuf=NULL;
     }
     if(c) {
         free(c);
+        c=NULL;
     }
     server.clients--;
 }
@@ -521,7 +528,7 @@ static void spawnIOThread(void) {
     sigaddset(&mask,SIGHUP);
     sigaddset(&mask,SIGPIPE);
     pthread_sigmask(SIG_SETMASK, &mask, &omask);
-    while ((err = pthread_create(&thread,&server.io_threads_attr,IOThreadEntryPoint,NULL)) != 0) {
+    while ((err = pthread_create(&thread,NULL,IOThreadEntryPoint,NULL)) != 0) {
         redisLog(REDIS_WARNING,"Unable to spawn an I/O thread: %s",
             strerror(err));
         usleep(1000000);
