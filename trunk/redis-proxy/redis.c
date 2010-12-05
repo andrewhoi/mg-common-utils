@@ -125,6 +125,7 @@ static redisServer server;
 redisCommandInit *extCmdInit;
 redisCommandProc *extCmdProc;
 redisCommandDeinit *extCmdDeinit;
+processRequestBuffer  *extProcessRequestBuffer;
 
 int loadExtension(char *extName) {
     void *ext=dlopen(extName,RTLD_LAZY);
@@ -145,6 +146,11 @@ int loadExtension(char *extName) {
     extCmdDeinit=(redisCommandDeinit *)dlsym(ext,"_redisCommandDeinit");
     if(!extCmdDeinit) {
         redisLog(REDIS_FATAL,"Load symbol _redisCommandDeinit error: %s",dlerror());
+        return REDIS_ERR;
+    }
+    extProcessRequestBuffer=(processRequestBuffer *)dlsym(ext,"_processRequestBuffer");
+    if(!extProcessRequestBuffer) {
+        redisLog(REDIS_FATAL,"Load symbol _processRequestBuffer error: %s",dlerror());
         return REDIS_ERR;
     }
     return REDIS_OK;
@@ -207,10 +213,10 @@ static void acceptHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
 }
 
 static redisClient *createClient(int fd) {
-    redisClient *c = calloc(1,sizeof(*c));
+    redisClient *c = calloc(1,sizeof(redisClient));
+    if (!c) return NULL;
     anetNonBlock(NULL,fd);
     anetTcpNoDelay(NULL,fd);
-    if (!c) return NULL;
     if (aeCreateFileEvent(server.el,fd,AE_READABLE,readQueryFromClient, c) == AE_ERR) {
         close(fd);
         free(c);
@@ -233,11 +239,18 @@ static int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientD
 */
 static void readQueryFromClient(aeEventLoop *el, int fd, void *privdata, int mask) {
     redisClient *c = (redisClient*) privdata;
-    char buf[READ_BUF_LEN];
+    char *buf;
     int nread;
     REDIS_NOTUSED(el);
     REDIS_NOTUSED(mask);
-
+    
+    c->rbuf=realloc(c->rbuf,c->rlen+READ_BUF_LEN);
+    if(!c->rbuf) {
+        oom("realloc client read buffer.");
+    }
+    buf=c->rbuf+c->rlen;
+    memset(buf,0,READ_BUF_LEN);
+   
     nread = read(fd, buf, READ_BUF_LEN);
     if (nread == -1) {
         if (errno == EAGAIN) {
@@ -253,12 +266,6 @@ static void readQueryFromClient(aeEventLoop *el, int fd, void *privdata, int mas
         return;
     }
     if (nread) {
-    	if(c->rlen + nread > READ_BUF_LEN) {
-            redisLog(REDIS_VERBOSE, "Client Protocol Error");
-            freeClient(c);
-            return;
-        } 
-        memcpy(c->rbuf+c->rlen,buf,nread);
         c->rlen+=nread;
         c->lastinteraction = time(NULL);
     } else {
@@ -267,80 +274,10 @@ static void readQueryFromClient(aeEventLoop *el, int fd, void *privdata, int mas
     processInputBuffer(c);
 }
 
-/*
-return -1 if protocol error;
-return 0 if we need more data;
-return 1 if the request if full and valid
 
-request example:
-
-*3\r\n
-$3\r\n
-SET\r\n
-$5\r\n
-mykey\r\n
-$7\r\n
-myvalue\r\n
-
-*/
-
-int validRequestBuffer(char *rbuf,int rlen) {
-    char *op=rbuf;
-    if( rlen < 3 || rbuf[rlen-2] != '\r'|| rbuf[rlen-1] != '\n' ) {
-        return 0;
-    }
-    char slen[11];
-    int argc,ilen;
-    memset(slen,0,11);
-    if( rbuf[0] != '*' ) { //possibly old protocol command
-        return 1;
-    }
-    rbuf++; // '*'
-    memset(slen,0,11);
-    char *p=strstr(rbuf,"\r\n");
-    strncpy(slen,rbuf,p-rbuf);
-    rbuf=p;
-    rbuf+=2; // "\r\n"
-    argc=atoi(slen);
-    if(argc <= 0 || argc > 1024) {
-        return -1;
-    }
-    if(rbuf - op >= rlen) {
-        return 0; // we need more data.
-    }
-    for(; argc > 0; argc--) {
-        if(rbuf[0] != '$') {
-            return -1;
-        }
-        rbuf++; // '$'
-        memset(slen,0,11);
-        p=strstr(rbuf,"\r\n");
-        strncpy(slen,rbuf,p-rbuf);
-        rbuf=p;
-        rbuf+=2; //"\r\n"
-        ilen=atoi(slen);
-        if(ilen == -1) {
-            ilen=0;
-        } else {
-            rbuf+=ilen+2; // data and "\r\n"
-        }
-        if(rbuf - op > rlen) {
-            return 0; // we need the next bulk.
-        }
-        if(rbuf - op == rlen && argc != 1) { // not the last bulk
-            return 0;
-        }
-    }
-    if(rbuf - op != rlen) {
-        return -1;
-    } else {
-        return 1;
-    }
-    return -1;   
-}
 
 static void processInputBuffer(redisClient *c) {
-    int v=validRequestBuffer(c->rbuf,c->rlen);
+    int v=(*extProcessRequestBuffer)(c->rbuf,c->rlen);
     if(v == -1) {
         redisLog(REDIS_VERBOSE, "Client Protocol Error");
         freeClient(c);
@@ -508,7 +445,15 @@ static void freeClient(redisClient *c) {
     aeDeleteFileEvent(server.el,c->fd,AE_READABLE);
     aeDeleteFileEvent(server.el,c->fd,AE_WRITABLE);
     close(c->fd);
-    if(c) free(c);
+    if(c->rbuf) {
+        free(c->rbuf);
+    }
+    if(c->wbuf) {
+        free(c->wbuf);
+    }
+    if(c) {
+        free(c);
+    }
     server.clients--;
 }
 
@@ -538,8 +483,14 @@ static void sendReplyToClient(aeEventLoop *el, int fd, void *privdata, int mask)
 }
 
 static void resetClient(redisClient *c) {
-    memset(c->rbuf,0,READ_BUF_LEN);
-    memset(c->wbuf,0,WRITE_BUF_LEN);
+    if(c->rbuf) {
+        free(c->rbuf);
+        c->rbuf=NULL;
+    }
+    if(c->wbuf) {
+        free(c->wbuf);
+        c->wbuf=NULL;
+    }
     c->rlen=0;
     c->wpos=0;
     c->wlen=0;

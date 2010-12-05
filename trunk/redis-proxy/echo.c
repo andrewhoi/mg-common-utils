@@ -2,14 +2,25 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <poll.h>
+#include <errno.h>
 #include "redis.h"
 #include "anet.h"
 
+#define SERVER_TIME_OUT 1000 // ms
 #define CONN_ERR "-ERR: Connection error\r\n"
 #define CONN_ERR_LEN 24
 
-static int connectRedis() {
-    int fd=anetTcpConnect(NULL, "localhost", 6379);
+static inline int timeout(struct timeval begin) {
+    struct timeval now;
+    gettimeofday(&now,NULL);
+    int passed;
+    passed=(now.tv_sec - begin.tv_sec) * 1000;
+    passed+=(now.tv_usec - begin.tv_usec) / 1000;
+    return passed;
+}
+
+static inline int connectRedis() {
+    int fd=anetTcpNonBlockConnect(NULL, "localhost", 6379);
     return fd;
 }
 
@@ -30,7 +41,79 @@ myvalue\r\n
 
 */
 
-int validSingleLineResponseBuffer(char *rbuf,int rlen) {
+int _processRequestBuffer(char *rbuf,int rlen) {
+    char *op=rbuf;
+    if( rlen < 3 || rbuf[rlen-2] != '\r'|| rbuf[rlen-1] != '\n' ) {
+        return 0;
+    }
+    char slen[11];
+    int argc,ilen;
+    memset(slen,0,11);
+    if( rbuf[0] != '*' ) { //possibly old protocol command
+        return 1;
+    }
+    rbuf++; // '*'
+    memset(slen,0,11);
+    char *p=strstr(rbuf,"\r\n");
+    strncpy(slen,rbuf,p-rbuf);
+    rbuf=p;
+    rbuf+=2; // "\r\n"
+    argc=atoi(slen);
+    if(argc <= 0 || argc > 1024) {
+        return -1;
+    }
+    if(rbuf - op >= rlen) {
+        return 0; // we need more data.
+    }
+    for(; argc > 0; argc--) {
+        if(rbuf[0] != '$') {
+            return -1;
+        }
+        rbuf++; // '$'
+        memset(slen,0,11);
+        p=strstr(rbuf,"\r\n");
+        strncpy(slen,rbuf,p-rbuf);
+        rbuf=p;
+        rbuf+=2; //"\r\n"
+        ilen=atoi(slen);
+        if(ilen == -1) {
+            ilen=0;
+        } else {
+            rbuf+=ilen+2; // data and "\r\n"
+        }
+        if(rbuf - op > rlen) {
+            return 0; // we need the next bulk.
+        }
+        if(rbuf - op == rlen && argc != 1) { // not the last bulk
+            return 0;
+        }
+    }
+    if(rbuf - op != rlen) {
+        return -1;
+    } else {
+        return 1;
+    }
+    return -1;   
+}
+
+/*
+return -1 if protocol error;
+return 0 if we need more data;
+return 1 if the request if full and valid
+
+request example:
+
+*3\r\n
+$3\r\n
+SET\r\n
+$5\r\n
+mykey\r\n
+$7\r\n
+myvalue\r\n
+
+*/
+
+static inline int validSingleLineResponseBuffer(char *rbuf,int rlen) {
     if( rbuf[0] != '+' ) {
         return -1;
     }
@@ -47,7 +130,7 @@ int validSingleLineResponseBuffer(char *rbuf,int rlen) {
     return -1;
 }
 
-int validErrorMsgResponseBuffer(char *rbuf,int rlen) {
+static inline int validErrorMsgResponseBuffer(char *rbuf,int rlen) {
     if( rbuf[0] != '-' ) {
         return -1;
     }
@@ -64,7 +147,7 @@ int validErrorMsgResponseBuffer(char *rbuf,int rlen) {
     return -1;
 }
 
-int validIntegerReplyResponseBuffer(char *rbuf,int rlen) {
+static inline int validIntegerReplyResponseBuffer(char *rbuf,int rlen) {
     if( rbuf[0] != ':' ) {
         return -1;
     }
@@ -81,7 +164,7 @@ int validIntegerReplyResponseBuffer(char *rbuf,int rlen) {
     return -1;
 }
 
-int validBulkReplyResponseBuffer(char *rbuf,int rlen) {
+static inline int validBulkReplyResponseBuffer(char *rbuf,int rlen) {
     char *op=rbuf;
     if(rbuf[0] != '$') {
         return -1;
@@ -118,7 +201,7 @@ int validBulkReplyResponseBuffer(char *rbuf,int rlen) {
 /*
 *2\r\n$-1\r\n$3\r\n456\r\n
 */
-int validMultiBuckResponseBuffer(char *rbuf,int rlen) {
+static inline int validMultiBuckResponseBuffer(char *rbuf,int rlen) {
     char *op=rbuf;
     if( rbuf[0] != '*' ) {
         return -1;
@@ -175,7 +258,7 @@ int validMultiBuckResponseBuffer(char *rbuf,int rlen) {
     return -1;   
 }
 
-int validResponseBuffer(char *rbuf,int rlen) {
+int _processResponseBuffer(char *rbuf,int rlen) {
     char s=rbuf[0];
     if(s == '+') {
         return validSingleLineResponseBuffer(rbuf,rlen);
@@ -203,70 +286,119 @@ void _redisCommandInit(void **privptr) {
     return;
 }
 
+static inline void setClientError(redisClient *c) {
+    c->wbuf=realloc(c->wbuf,CONN_ERR_LEN+1);
+    if(!c->wbuf) {
+        exit(-1);
+    }
+    memset(c->wbuf,0,CONN_ERR_LEN+1);
+    strcpy(c->wbuf,CONN_ERR);
+    c->wlen=CONN_ERR_LEN;
+    return;
+}
+
 void _redisCommandProc(redisClient *c,void **privptr) {
-    int *fd=(int *)(*privptr);
+    int *fd,err;
+    int nwrite,nread,rc;
+    struct pollfd pfd;
+    struct timeval begin;
+    char *buf;
+
+    fd=(int *)(*privptr);
     if(*fd == -1) {
         *fd=connectRedis();
         if(*fd == -1) {
-            memset(c->wbuf,0,sizeof(c->wbuf));
-            strcpy(c->wbuf,CONN_ERR);
-            c->wlen=CONN_ERR_LEN;
+            setClientError(c);
             return;
         }
     }
-    int size;
-    struct pollfd pfd;
     pfd.fd=*fd;
     pfd.events = POLLOUT;
-    if(poll(&pfd,1,100) > 0) {
-        size=write(*fd, c->rbuf, c->rlen);
-    } else {
-        close(*fd);
-        *fd=-1;
-        memset(c->wbuf,0,sizeof(c->wbuf));
-        strcpy(c->wbuf,CONN_ERR);
-        c->wlen=CONN_ERR_LEN;
-        return;
+    pfd.revents = 0;
+    gettimeofday(&begin,NULL);
+    nwrite=0;
+    err=1;
+    while(poll(&pfd,1,SERVER_TIME_OUT/10) > 0){
+        rc=write(*fd, c->rbuf + nwrite, c->rlen - nwrite);
+        if(timeout(begin) >= SERVER_TIME_OUT) {
+            err=1;
+            break;
+        }
+        if(rc > 0) {
+            nwrite+=rc;
+            if(nwrite == c->rlen) {
+                err=0;
+                break;
+            } else {
+                continue;
+            }
+        }
+        if( rc == -1 ) {
+            if( errno == EAGAIN ) {
+                continue;
+            } else {
+                err=1;
+                break;
+            }
+        }
     }
-    if(size != c->rlen) {
+    if(err == 1) {
         close(*fd);
         *fd=-1;
-        memset(c->wbuf,0,sizeof(c->wbuf));
-        strcpy(c->wbuf,CONN_ERR);
-        c->wlen=CONN_ERR_LEN;
+        setClientError(c);
         return;
     }
     pfd.events = POLLIN;
-    if(poll(&pfd,1,100) > 0) {
-        size=read(*fd,c->wbuf,WRITE_BUF_LEN);
-    } else {
+    pfd.revents = 0;
+    gettimeofday(&begin,NULL);
+    err=1;
+    while(poll(&pfd,1,SERVER_TIME_OUT/10) > 0) {
+        if(timeout(begin) >= SERVER_TIME_OUT) {
+            err=1;
+            break;
+        }
+        c->wbuf=realloc(c->wbuf,c->wlen+WRITE_BUF_LEN);
+        if(!c->wbuf) {
+            exit(-1);
+        }
+        buf=c->wbuf+c->wlen;
+        memset(buf,0,WRITE_BUF_LEN);
+        rc = read(*fd, buf, WRITE_BUF_LEN);
+        if (rc == -1) {
+            if (errno == EAGAIN) {
+                nread = 0;
+                continue;
+            } else {
+                err=1;
+                break;
+            }
+        }
+        if (rc == 0) {
+            err=1;
+            break;
+        }
+        if (rc > 0) {
+            c->wlen+=rc;
+            rc=_processResponseBuffer(c->wbuf,c->wlen);
+            if(rc == 1) {
+                err=0;
+                break;
+            }
+            if(rc == 0) {
+                continue;
+            }
+            if(rc == -1) {
+                err=1;
+                break;
+            }
+        }
+    }
+    if(err == 1) {
         close(*fd);
         *fd=-1;
-        memset(c->wbuf,0,sizeof(c->wbuf));
-        strcpy(c->wbuf,CONN_ERR);
-        c->wlen=CONN_ERR_LEN;
+        setClientError(c);
         return;
     }
-    if(size == -1 || size == 0 ) {
-        close(*fd);
-        *fd=-1;
-        strcpy(c->wbuf,CONN_ERR);
-        c->wlen=CONN_ERR_LEN;
-        return;
-    }
-    c->wlen=size;
-	int v=validResponseBuffer(c->wbuf,c->wlen);
-	if(v == 1) {
-	    return;
-	}
-	if(v == -1 || v == 0) {
-        close(*fd);
-        *fd=-1;
-        memset(c->wbuf,0,sizeof(c->wbuf));
-        strcpy(c->wbuf,CONN_ERR);
-        c->wlen=CONN_ERR_LEN;
-        return;
-	}
     return;
 }
 

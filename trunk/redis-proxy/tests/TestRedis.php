@@ -57,7 +57,7 @@ class Redis_Test extends PHPUnit_Framework_TestCase
 
     public function test1000() {
 
-	 $s = str_repeat('A', 900);
+	 $s = str_repeat('A', 100000);
 	 $this->redis->set('x', $s);
 	 $this->assertEquals($s, $this->redis->get('x'));
 
