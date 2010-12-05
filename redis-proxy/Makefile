@@ -6,7 +6,7 @@ OPTIMIZATION?=-O3
 CFLAGS?= -std=c99 -finline-functions -rdynamic -pedantic $(OPTIMIZATION) -Wall $(ARCH) $(PROF)
 CCLINK?= -pthread -ldl
 CCOPT= $(CFLAGS) $(CCLINK) $(ARCH) $(PROF)
-#DEBUG?= -g -rdynamic -ggdb 
+DEBUG?= -g -rdynamic -ggdb 
 
 INSTALL_TOP= /usr/local
 INSTALL_BIN= $(INSTALL_TOP)/bin
