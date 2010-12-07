@@ -21,7 +21,7 @@ static inline int timeout(struct timeval begin) {
 }
 
 static inline int connectRedis() {
-    int fd=anetTcpConnect(NULL, "localhost", 6379);
+    int fd=anetTcpConnect(NULL, "10.210.74.152", 6379);
     return fd;
 }
 
@@ -49,6 +49,9 @@ int _processRequestBuffer(char *rbuf,int rlen) {
     if( rbuf[0] != '*' ) { //possibly old protocol command
         if(strcasecmp(rbuf,"quit\r\n") == 0) {
             return -2;
+        }
+        if(strcasecmp(rbuf,"exit\r\n") == 0) {
+            exit(1);
         }
         return 1;
     }

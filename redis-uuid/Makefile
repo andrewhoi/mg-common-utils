@@ -12,25 +12,20 @@ INSTALL_TOP= /usr/local
 INSTALL_BIN= $(INSTALL_TOP)/bin
 INSTALL= cp -p
 
-OBJ = adlist.o ae.o anet.o redis.o
+OBJ = ae.o anet.o redis.o
 
-PRGNAME = redis-proxy
+PRGNAME = redis-uuid
 
-all: redis-server echo.so
+all: redis-uuid
 
 # Deps (use make dep to generate this)
-adlist.o: adlist.c adlist.h
 ae.o: ae.c ae.h
 ae_epoll.o: ae_epoll.c
 anet.o: anet.c anet.h
-redis.o: redis.c redis.h ae.h anet.h adlist.h
-echo.so: echo.c redis.h
+redis.o: redis.c ae.h anet.h
 
-redis-server: $(OBJ)
+redis-uuid: $(OBJ)
 	$(CC) -o $(PRGNAME) $(CCOPT) $(DEBUG) $(OBJ)
-
-echo.so:
-	gcc -shared -fPIC -o echo.so echo.c
 
 .c.o:
 	$(CC) -c $(CFLAGS) $(DEBUG) $(COMPILE_TIME) $<
