@@ -212,7 +212,7 @@ static void readQueryFromClient(aeEventLoop *el, int fd, void *privdata, int mas
     }
     if (nread) {
         c->rlen+=nread;
-        if(c->rlen >= READ_BUF_LEN) { //
+        if(c->rlen >= READ_BUF_LEN - 1) { //
             freeClient(c);
             return;
         }
