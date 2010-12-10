@@ -84,8 +84,7 @@ void *create_db(char *name,int size) {
     return m;
 }
 
-void close_db(void *m,int size)
-{
+void close_db(void *m,int size) {
 	if(m != NULL)
 		munmap(m,size);
 	return;
