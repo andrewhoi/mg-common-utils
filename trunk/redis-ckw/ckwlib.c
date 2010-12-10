@@ -20,7 +20,7 @@ int set_nodes(node *nodes,int *used,char *s) {
 	return 0;
 }
 
-int get_nodes(node *nodes,char *s,char *k) {
+int get_nodes(node *nodes,char *s) {
 	int p=0;
 	while( *s != '\0' ) {
 		if(nodes[p].cell[(unsigned char)*s].end == 1) {
@@ -33,17 +33,18 @@ int get_nodes(node *nodes,char *s,char *k) {
 	return 0;
 }
 
-int check_keywords(node *nodes,char *s,char *k) {
+int check_keywords(node *nodes,char *s) {
 	int cr=0;
+	char *o=s;
 	while ( *s != '\0' ) {
 		cr=get_nodes(nodes,s,k);
 		if(cr == 1) {
-			return 1;
+		    return s-o;
 		} else {
 			s++;
 		}
 	}
-	return 0;
+	return -1;
 }
 
 void *open_db(char *name,int *size) {

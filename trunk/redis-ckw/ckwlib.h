@@ -24,6 +24,6 @@ typedef struct _node {
 void *create_db(char *name,int num);
 void *open_db(char *name,int *num);
 void close_db(void *m,int size);
-int set_nodes(node *nodes,int *used,char *s);
-int get_nodes(node *nodes,char *s,char *k);
-int check_keywords(node *nodes,char *s,char *k);
+int set_nodes(node *nodes,int *used);
+int get_nodes(node *nodes,char *s);
+int check_keywords(node *nodes,char *s);
