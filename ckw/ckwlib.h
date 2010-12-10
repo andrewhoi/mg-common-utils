@@ -9,37 +9,21 @@
 #include <sys/stat.h>
 #include <assert.h>
 
+#define MAX_NODE 2*1024*1024 
+#define KW_MAX_LEN 128
 
-#define KW_FILE "kw2.txt"
-#define DB_FILE "kw.db"
-#define DB_SIZE 16384*512*32
+typedef struct _cell {
+	unsigned int point:31;
+	unsigned int end:1;
+}cell;
 
-#define KW_MAX_LEN 512
-
-int set_nodes(char *s);
-int get_nodes(char *s);
-int get_nodes_rl(char *s,int len);
-int check_keywords(char *s);
-int check_keywords_n(char *s,int len);
-void *open_db(char *db_name,unsigned int size,int create);
-void close_db(void *m,int size);
-
-typedef
-struct _cell
-{
-	unsigned short point:15;
-	unsigned short end:1;
-}
-cell;
-
-typedef
-struct _node
-{
+typedef struct _node {
 	 cell cell[256];
-}
-node;
+}node;
 
-node *nodes;
-
-int used;
-int root;
+void *create_db(char *name,int num);
+void *open_db(char *name,int *num);
+void close_db(void *m,int size);
+int set_nodes(node *nodes,int *used,char *s);
+int get_nodes(node *nodes,char *s,char *k);
+int check_keywords(node *nodes,char *s,char *k);
