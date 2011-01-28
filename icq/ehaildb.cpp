@@ -14,48 +14,47 @@ bool ehaildb::init() {
         puts(ib_strerror(err));
         return false;
     }
-    err = ib_cfg_set_int("fulsh_log_at_trx_commit", 2);
+    err = ib_cfg_set_int("flush_log_at_trx_commit", 2);
     if(err != DB_SUCCESS){
-        puts(ib_strerror(err));
+        cerr << ib_strerror(err) << endl;
         return false;
     }
     err = ib_cfg_set_int("log_file_size", 5*1024*1024);
     if(err != DB_SUCCESS){
-        puts(ib_strerror(err));
+        cerr << ib_strerror(err) << endl;
         return false;
     }
     err = ib_cfg_set_int("log_files_in_group", 2);
     if(err != DB_SUCCESS){
-        puts(ib_strerror(err));
+        cerr << ib_strerror(err) << endl;
         return false;
     }
     err = ib_cfg_set_text("log_group_home_dir", "./");
     if(err != DB_SUCCESS){
-        puts(ib_strerror(err));
+        cerr << ib_strerror(err) << endl;
         return false;
     }
     err = ib_cfg_set_text("data_home_dir", "./");
     if(err != DB_SUCCESS){
-        puts(ib_strerror(err));
+        cerr << ib_strerror(err) << endl;
         return false;
     }
     err = ib_cfg_set_text("data_file_path", "ibdata1:10M:autoextend");
     if(err != DB_SUCCESS){
-        puts(ib_strerror(err));
+        cerr << ib_strerror(err) << endl;
         return false;
     }
     err = ib_cfg_set_bool_on("file_per_table");
     if(err != DB_SUCCESS){
-        puts(ib_strerror(err));
+        cerr << ib_strerror(err) << endl;
         return false;
     }
-
     err=ib_startup("barracuda");
     if(err != DB_SUCCESS){
-        puts(ib_strerror(err));
+        cerr << ib_strerror(err) << endl;
         return false;
     }
-
+    cerr << "DB init successed." << endl;
     return true;
 }
 
@@ -63,7 +62,7 @@ bool ehaildb::deinit() {
     ib_err_t err;
     err=ib_shutdown(IB_SHUTDOWN_NORMAL);
     if(err != DB_SUCCESS){
-        puts(ib_strerror(err));
+        cerr << ib_strerror(err) << endl;
         return false;
     }
     return true;
@@ -88,11 +87,29 @@ bool ehaildb::create_table(string name) {
     string tname("icq/");
     tname+=name;
     err=ib_table_schema_create(tname.c_str(),&tbl_sch,IB_TBL_COMPACT,0);
+    if(err != DB_SUCCESS) {
+        return false;
+    }
     err=ib_table_schema_add_col(tbl_sch,"id",IB_INT,IB_COL_NOT_NULL,0,4);
+    if(err != DB_SUCCESS) {
+        return false;
+    }
     err=ib_table_schema_add_col(tbl_sch,"data",IB_VARCHAR,IB_COL_NOT_NULL,0,65500);
+    if(err != DB_SUCCESS) {
+        return false;
+    }
     err=ib_table_schema_add_index(tbl_sch,"PRIMARY_KEY",&idx_sch);
+    if(err != DB_SUCCESS) {
+        return false;
+    }
     err=ib_index_schema_add_col(idx_sch,"id",0);
+    if(err != DB_SUCCESS) {
+        return false;
+    }
     err=ib_index_schema_set_clustered(idx_sch);
+    if(err != DB_SUCCESS) {
+        return false;
+    }
     trx=ib_trx_begin(IB_TRX_SERIALIZABLE);
     err=ib_schema_lock_exclusive(trx);
     err=ib_table_create(trx,tbl_sch,&tid);
@@ -272,6 +289,8 @@ result ehaildb::get_oldest(string name) {
 
 int main(int argc,char **argv){
     ehaildb *edb=new ehaildb();
+    edb->init();
+    edb->create_database("icq");
     bool ret;
     string name("mg");
     ret=edb->create_table(name);

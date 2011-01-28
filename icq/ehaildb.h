@@ -20,8 +20,8 @@ typedef struct info info;
 class ehaildb {
 public:
     ehaildb() {
-        this->init();
-        this->create_database("icq");
+        //this->init();
+        //this->create_database("icq");
     };
     ~ehaildb() {
         this->deinit();
