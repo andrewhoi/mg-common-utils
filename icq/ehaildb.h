@@ -4,15 +4,16 @@
 #include <string>
 #include <map>
 #include <pthread.h>
+#include <stdint.h>
 
-struct result {
-    int pos;
+struct row {
+    int64_t pos;
     std::string data;
 };
-typedef struct result result;
+typedef struct row row;
 
 struct info {
-    int cur_id;
+    int64_t cur_id;
     pthread_mutex_t mutex;
 };
 typedef struct info info;   
@@ -27,14 +28,17 @@ public:
     virtual bool deinit();
     virtual bool create_database(std::string name);
     virtual bool create_table(std::string name);
+
     virtual bool drop_table(std::string name);
     virtual bool drop_database(std::string name);
     virtual bool truncate_table(std::string name);
-    virtual bool insert(std::string name,std::string data,int &pos);
-    virtual bool get(std::string name,int pos,result &r);
-    virtual bool get_next(std::string name,int pos,result &r);
-    virtual bool get_latest(std::string name,result &r);
-    virtual bool get_oldest(std::string name,result &r);
+
+    virtual bool insert(std::string name,row &r);
+
+    virtual bool get(std::string name,row &r);
+    virtual bool get_next(std::string name,row &r);
+    virtual bool get_latest(std::string name,row &r);
+    virtual bool get_oldest(std::string name,row &r);
 private:
     std::map<std::string,info> tinfo;
 };
