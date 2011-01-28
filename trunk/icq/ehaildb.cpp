@@ -71,11 +71,21 @@ bool ehaildb::deinit() {
 bool ehaildb::create_database(string name) {
     ib_bool_t err;
     err=ib_database_create(name.c_str());
-    if(err == IB_TRUE) {
-        return true;
-    } else {
+    if(err != IB_TRUE) {
+        cerr << "create database error." << endl;
         return false;
     }
+    return true;
+}
+
+bool ehaildb::drop_database(string name) {
+    ib_err_t err;
+    err=ib_database_drop(name.c_str());
+    if(err != DB_SUCCESS) {
+        cerr << ib_strerror(err) << endl;
+        return false;
+    }
+    return true;
 }
 
 bool ehaildb::create_table(string name) {
@@ -91,7 +101,7 @@ bool ehaildb::create_table(string name) {
         cerr << ib_strerror(err) << endl;
         return false;
     }
-    err=ib_table_schema_add_col(tbl_sch,"id",IB_INT,IB_COL_NOT_NULL,0,4);
+    err=ib_table_schema_add_col(tbl_sch,"pos",IB_INT,IB_COL_NOT_NULL,0,8);
     if(err != DB_SUCCESS) {
         cerr << ib_strerror(err) << endl;
         return false;
@@ -106,7 +116,7 @@ bool ehaildb::create_table(string name) {
         cerr << ib_strerror(err) << endl;
         return false;
     }
-    err=ib_index_schema_add_col(idx_sch,"id",0);
+    err=ib_index_schema_add_col(idx_sch,"pos",0);
     if(err != DB_SUCCESS) {
         cerr << ib_strerror(err) << endl;
         return false;
@@ -183,6 +193,9 @@ bool ehaildb::drop_table(string name) {
 bool ehaildb::truncate_table(string name) {
     ib_err_t err;
     ib_id_t tid=0;
+    string tname("icq/");
+    tname+=name;
+    err=ib_table_truncate(tname.c_str(),&tid);
     if(err != DB_SUCCESS) {
         cerr << ib_strerror(err) << endl;
         return false;
@@ -190,16 +203,7 @@ bool ehaildb::truncate_table(string name) {
     return true;
 }
 
-bool ehaildb::drop_database(string name) {
-    ib_err_t err;
-    err=ib_database_drop(name.c_str());
-    if(err != DB_SUCCESS) {
-        cerr << ib_strerror(err) << endl;
-        return false;
-    }
-    return true;
-}
-bool ehaildb::insert(string name,string data,int &r) {
+bool ehaildb::insert(string name,row &r) {
     ib_err_t err;
     ib_trx_t trx;
     ib_crsr_t crsr;
@@ -217,13 +221,13 @@ bool ehaildb::insert(string name,string data,int &r) {
     }
     ib_tpl_t tpl;
     tpl=ib_clust_read_tuple_create(crsr);
-    int pos=(this->tinfo[name].cur_id)++;
-    err=ib_tuple_write_u32(tpl,0,pos);
+    r.pos=this->tinfo[name].cur_id++;
+    err=ib_tuple_write_i64(tpl,0,r.pos);
     if(err != DB_SUCCESS) {
         cerr << ib_strerror(err) << endl;
         return false;
     }
-    err=ib_col_set_value(tpl,1,data.c_str(),data.size());
+    err=ib_col_set_value(tpl,1,r.data.c_str(),r.data.size());
     if(err != DB_SUCCESS) {
         cerr << ib_strerror(err) << endl;
         return false;
@@ -244,10 +248,10 @@ bool ehaildb::insert(string name,string data,int &r) {
         cerr << ib_strerror(err) << endl;
         return false;
     }
-    return pos;
+    return true;
 }
 
-bool ehaildb::get(string name,int pos,result &r) {
+bool ehaildb::get(string name,row &r) {
     ib_err_t err;
     ib_trx_t trx;
     ib_crsr_t crsr;
@@ -261,19 +265,31 @@ bool ehaildb::get(string name,int pos,result &r) {
     err=ib_cursor_open_table(tname.c_str(),trx,&crsr);
     if(err != DB_SUCCESS) {
         cerr << ib_strerror(err) << endl;
+        err=ib_trx_commit(trx);
         return false;
     }
     ib_tpl_t key;
     int res;
     key=ib_clust_search_tuple_create(crsr);
-    err=ib_tuple_write_u32(key,0,pos);
+    err=ib_tuple_write_i64(key,0,r.pos);
     if(err != DB_SUCCESS) {
         cerr << ib_strerror(err) << endl;
+        err=ib_cursor_close(crsr);
+        err=ib_trx_commit(trx);
         return false;
     }
     err=ib_cursor_moveto(crsr,key,IB_CUR_GE,&res);
     if(err != DB_SUCCESS) {
         cerr << ib_strerror(err) << endl;
+        err=ib_cursor_close(crsr);
+        err=ib_trx_commit(trx);
+        return false;
+    }
+    if(res != 0) {
+        /* not found */;
+        cerr << "search not found. res=" << res << endl;
+        err=ib_cursor_close(crsr);
+        err=ib_trx_commit(trx);
         return false;
     }
     ib_tpl_t tpl;
@@ -281,16 +297,18 @@ bool ehaildb::get(string name,int pos,result &r) {
     err=ib_cursor_read_row(crsr,tpl);
     if(err != DB_SUCCESS) {
         cerr << ib_strerror(err) << endl;
+        err=ib_cursor_close(crsr);
+        err=ib_trx_commit(trx);
         return false;
     }
     int data_len=ib_col_get_len(tpl,1);
     const void *ptr;
     ptr=ib_col_get_value(tpl,1);
     r.data=string((char *)ptr,data_len);
-    r.pos=pos;
     err=ib_cursor_close(crsr);
     if(err != DB_SUCCESS) {
         cerr << ib_strerror(err) << endl;
+        err=ib_trx_commit(trx);
         return false;
     }
     err=ib_trx_commit(trx);
@@ -301,7 +319,7 @@ bool ehaildb::get(string name,int pos,result &r) {
     return true;
 }
 
-bool ehaildb::get_next(string name,int pos,result &r) {
+bool ehaildb::get_next(string name,row &r) {
     ib_err_t err;
     ib_trx_t trx;
     ib_crsr_t crsr;
@@ -320,7 +338,7 @@ bool ehaildb::get_next(string name,int pos,result &r) {
     ib_tpl_t key;
     int res;
     key=ib_clust_search_tuple_create(crsr);
-    err=ib_tuple_write_u32(key,0,pos);
+    err=ib_tuple_write_i64(key,0,r.pos);
     if(err != DB_SUCCESS) {
         cerr << ib_strerror(err) << endl;
         return false;
@@ -346,7 +364,11 @@ bool ehaildb::get_next(string name,int pos,result &r) {
     const void *ptr;
     ptr=ib_col_get_value(tpl,1);
     r.data=string((char *)ptr,data_len);
-    r.pos=pos;
+    err=ib_tuple_read_i64(tpl,0,&(r.pos));
+    if(err != DB_SUCCESS) {
+        cerr << ib_strerror(err) << endl;
+        return false;
+    }
     err=ib_cursor_close(crsr);
     if(err != DB_SUCCESS) {
         cerr << ib_strerror(err) << endl;
@@ -360,7 +382,7 @@ bool ehaildb::get_next(string name,int pos,result &r) {
     return true;
 }
 
-bool ehaildb::get_latest(string name,result &r) {
+bool ehaildb::get_latest(string name,row &r) {
     ib_err_t err;
     ib_trx_t trx;
     ib_crsr_t crsr;
@@ -393,14 +415,12 @@ bool ehaildb::get_latest(string name,result &r) {
     int data_len=ib_col_get_len(tpl,1);
     const void *ptr;
     ptr=ib_col_get_value(tpl,1);
-    int pos;
-    err=ib_tuple_read_i32(tpl,0,&pos);
+    err=ib_tuple_read_i64(tpl,0,&(r.pos));
     if(err != DB_SUCCESS) {
         cerr << ib_strerror(err) << endl;
         return false;
     }
     r.data=string((char *)ptr,data_len);
-    r.pos=pos;
     err=ib_cursor_close(crsr);
     if(err != DB_SUCCESS) {
         cerr << ib_strerror(err) << endl;
@@ -414,7 +434,7 @@ bool ehaildb::get_latest(string name,result &r) {
     return true;
 }
 
-bool ehaildb::get_oldest(string name,result &r) {
+bool ehaildb::get_oldest(string name,row &r) {
     ib_err_t err;
     ib_trx_t trx;
     ib_crsr_t crsr;
@@ -448,15 +468,13 @@ bool ehaildb::get_oldest(string name,result &r) {
     const void *ptr;
     ptr=ib_col_get_value(tpl,1);
 
-    int pos;
-    err=ib_tuple_read_i32(tpl,0,&pos);
+    err=ib_tuple_read_i64(tpl,0,&(r.pos));
     if(err != DB_SUCCESS) {
         cerr << ib_strerror(err) << endl;
         return false;
     }
     
     r.data=string((char *)ptr,data_len);
-    r.pos=pos;
     err=ib_cursor_close(crsr);
     if(err != DB_SUCCESS) {
         cerr << ib_strerror(err) << endl;
@@ -493,26 +511,35 @@ int main(int argc,char **argv){
         delete edb;
         return 1;
     }
-    int pos;
-    for(int i=1;i<1000;i++){
-        pos=edb->insert(name,string(i,'a'),pos);
+    row r;
+    for(int i=10;i<1000;i++){
+        r.data=string(i,'a');
+        ret=edb->insert(name,r);
+        if(ret == false) {
+            cerr << "insert error : i=" << i << endl;
+        } else {
+            cerr << "insert : pos = " << r.pos << endl;
+        }
     }
-    result r;
-    pos=100;
-    ret=edb->get(name,pos,r);
-    cout << r.data << "\t" << r.pos << endl;
-    
-    ret=edb->get_latest(name,r);
-    cout << r.data << "\t" << r.pos << endl;
-
-    ret=edb->get_oldest(name,r);
-    cout << r.data << "\t" << r.pos << endl;
-    
-    for(int i=1;i<100;i++) {
-        ret=edb->get_next(name,i,r);
+    r.pos=100;
+    ret=edb->get(name,r);
+    if(ret == false){
+        cerr << "get " << r.pos << " not found" << endl;
+    }else{
         cout << r.data << "\t" << r.pos << endl;
     }
-    
+    ret=edb->get_latest(name,r);
+    if(ret == false) {
+        cerr << "get_latest error" << endl;
+    } else {
+        cout << r.data << "\t" << r.pos << endl;
+    }
+    ret=edb->get_oldest(name,r);
+    if(ret == false) {
+        cerr << "get_oldest error" << endl;
+    } else {
+        cout << r.data << "\t" << r.pos << endl;
+    }
     ret=edb->drop_database("icq");
     if(ret == false) {
         cerr << "drop database error" << endl;
