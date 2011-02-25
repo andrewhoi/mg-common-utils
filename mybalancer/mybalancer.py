@@ -5,20 +5,25 @@ import time
 import Ice
 import json
 
-servers={}
+mysqls={}
 mc=""
 
-def add_server(table,server) :
-    global servers
-    servers[table]=server
+def init_mysql() :
+    add_mysql("test.ip_0",("10.210.74.152",3306,"mg","123qwe",None))
+    add_mysql("test.ip_1",("10.210.74.152",3306,"mg","123qwe",None))
+    add_mysql("test.ip_2",("10.210.74.152",3306,"mg","123qwe",None))
 
-def get_server(table) :
-    global servers
-    return servers.get(table)
+def add_mysql(table,server) :
+    global mysqls
+    mysqls[table]=server
 
-def del_server(table) :
-    global servers
-    servers.pop(table)
+def get_mysql(table) :
+    global mysqls
+    return mysqls.get(table)
+
+def del_mysql(table) :
+    global mysqls
+    mysqls.pop(table)
 
 def init_mc() :
     global mc
@@ -39,13 +44,13 @@ def sql_execute(sql,table) :
     return (mycsr.rowcount,mycsr.fetchall())
 
 def get_cursor(table) :
-    host,port,user,passwd,csr=get_server(table)
+    host,port,user,passwd,csr=get_mysql(table)
     if csr != None :
         return csr
     else:
         conn=MySQLdb.connect(host=host,port=port,user=user,passwd=passwd)
         csr=conn.cursor()
-        add_server(table,(host,port,user,passwd,csr))
+        add_mysql(table,(host,port,user,passwd,csr))
         return csr
 
 def lock_cache(key) :
@@ -104,9 +109,7 @@ def sql_delete(sql,db,table,hashkey,hashval) :
 
 def test() :
     init_mc()
-    add_server("test.ip_0",("10.210.74.152",3306,"mg","123qwe",None))
-    add_server("test.ip_1",("10.210.74.152",3306,"mg","123qwe",None))
-    add_server("test.ip_2",("10.210.74.152",3306,"mg","123qwe",None))
+    init_mysql()
     sql="insert into /*table*/ (ip) values ( '/*val*/')"
     for i in range(1,10) :
         _sql=sql.replace("/*val*/",str(i))
