@@ -10,12 +10,14 @@
 #include <errmsg.h>
 #include <my_getopt.h>
 #include "sql_common.h"
+#include "log_event_mini.h"
+
 
 int main(int argc,char **argv)
 {
 	MYSQL *m=mysql_init(NULL);
 	if(!m) return -1;
-	char *host="192.168.40.128";
+	char *host="10.210.74.152";
 	char *user="mg";
 	char *pass="123qwe";
 	char *db="test";
@@ -32,18 +34,46 @@ int main(int argc,char **argv)
         int2store(buf+4,(uint32)0);	//flags
         char *logname="mysql-bin.000001";
         size_t len=strlen(logname);
-        int4store(buf+6,(uint32)3);	//slave id
+        int4store(buf+6,(uint32)0);	//slave id
         memcpy(buf+10,logname,len);	//logname
         if(simple_command(m,COM_BINLOG_DUMP,buf,len+10,1))
 	{
                 return -3;
         	printf("%s\n",mysql_error(m));
 	}
+	FILE *fp=fopen("mysql-bin.000001","w");
+	fwrite(BINLOG_MAGIC,4,1,fp);
+	if(!fp){
+		perror("fopen");
+		return -4;
+	}
+	char *rbuf;
+	int begin=1;
 	for(;;)
 	{
 		size_t len=cli_safe_read(m);
-		if(len < 8) break;
+		if(len == packet_error || len < 1){
+			printf("packet error\n");
+			break;
+		}
+		if(len < 8 && m->net.read_pos[0] == 254){
+			 break;
+		}
+		rbuf=m->net.read_pos+1;
+		
+		if(rbuf[EVENT_TYPE_OFFSET] == ROTATE_EVENT){
+			if(begin == 1){
+				begin=0;
+				continue;
+			} else {
+				begin=1;
+				fwrite(rbuf,len-1,1,fp);
+				break;
+			}
+		}
+		fwrite(rbuf,len-1,1,fp);
 	}
+	fclose(fp);
 	mysql_close(m);
 	return 0;
 }
