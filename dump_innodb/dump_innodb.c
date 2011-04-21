@@ -18,12 +18,22 @@ int main(int argc,char **argv){
         return err;
     }
     
-    err = ib_cfg_set_int("log_file_size", 5*1024*1024);
+    err = ib_cfg_set_int("log_buffer_size", 8*1024*1024);
     if(err != DB_SUCCESS){
         puts(ib_strerror(err));
         return err;
     }
-    err = ib_cfg_set_int("log_files_in_group", 2);
+    err = ib_cfg_set_int("force_recovery", 1);
+    if(err != DB_SUCCESS){
+        puts(ib_strerror(err));
+        return err;
+    }
+    err = ib_cfg_set_int("log_file_size", 128*1024*1024);
+    if(err != DB_SUCCESS){
+        puts(ib_strerror(err));
+        return err;
+    }
+    err = ib_cfg_set_int("log_files_in_group", 3);
     if(err != DB_SUCCESS){
         puts(ib_strerror(err));
         return err;
@@ -39,7 +49,7 @@ int main(int argc,char **argv){
         puts(ib_strerror(err));
         return err;
     }
-    err = ib_cfg_set_text("data_file_path", "ibdata1:10M:autoextend");
+    err = ib_cfg_set_text("data_file_path", "ibdata1:500M:autoextend");
     if(err != DB_SUCCESS){
         puts(ib_strerror(err));
         return err;
@@ -50,7 +60,7 @@ int main(int argc,char **argv){
         return err;
     }
 
-    err=ib_startup("barracuda");
+    err=ib_startup("Antelope");
     if(err != DB_SUCCESS){
         puts(ib_strerror(err));
         return err;

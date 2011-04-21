@@ -225,7 +225,7 @@ print_tuple(
 {
 	int		i;
 	int		n_cols = ib_tuple_get_n_cols(tpl);
-
+	n_cols=1;
 	for (i = 0; i < n_cols; ++i) {
 		ib_ulint_t	data_len;
 		ib_col_meta_t	col_meta;
