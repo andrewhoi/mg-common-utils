@@ -193,7 +193,7 @@ function uRedis_mget($host,$port,$keys,&$err)
     $rstr=implode("",$rs);
     if($rstr[0] == '-')
     {
-        $err=substr($rstr,5);
+        $err=substr($rstr,6);
         return false;
     }
     else if($rstr[0] == '*')
@@ -228,7 +228,7 @@ for($nkey=0; $nkey < 110;$nkey++)
     }
     foreach($keys as $key)
     {
-        $r->set($key,$val);
+        //$r->set($key,$val);
     }
     $ret=uRedis_mget($host,$port,$keys,$err);
     if($ret == false)
