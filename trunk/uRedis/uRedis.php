@@ -156,7 +156,7 @@ function uRedis_mget($host,$port,$keys,&$err)
     $cmdl=strlen($cmd);
     if($cmdl > 1024 - $headerl)
     {
-        $err="request too large.";
+        $err="request is too big.";
         return false;
     }
     $sfd=socket_create(AF_INET,SOCK_DGRAM,SOL_UDP);
@@ -208,10 +208,16 @@ function uRedis_mget($host,$port,$keys,&$err)
 
 }
 
-$host="127.0.0.1";
+$host="10.210.210.67";
 $port=9002;
 $r=new Redis();
 $r->connect($host,$port);
+
+$val="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
+$val.=$val;
+$val.=$val;
+$val.=$val;
+$val.=$val;
 
 for($nkey=0; $nkey < 110;$nkey++)
 {
@@ -222,7 +228,7 @@ for($nkey=0; $nkey < 110;$nkey++)
     }
     foreach($keys as $key)
     {
-        $r->set($key,$key);
+        $r->set($key,$val);
     }
     $ret=uRedis_mget($host,$port,$keys,$err);
     if($ret == false)
