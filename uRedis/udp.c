@@ -109,14 +109,14 @@ void processCommandFromUdpClient(aeEventLoop *el, int fd, void *privdata, int ma
         vlen=getCommandforUdp(key,val,val_len);
         if(vlen < 0) {
             if(wlen + 5 > wbuf_len) {
-                wlen=sprintf(wbuf,"response is too big.");
+                wlen=sprintf(wbuf,"-Err: response is too big.");
                 goto uend;
             } else {
                 wlen+=snprintf(wbuf+wlen,wbuf_len-wlen,"$-1\r\n");
             }
         } else {
             if(wlen + vlen + 10 > wbuf_len) {
-                wlen=sprintf(wbuf,"response is too big.");
+                wlen=sprintf(wbuf,"-Err: response is too big.");
                 goto uend;
             } else {
                 wlen+=snprintf(wbuf+wlen,wbuf_len-wlen,"$%d\r\n",vlen);
