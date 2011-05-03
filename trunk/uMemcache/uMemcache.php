@@ -89,7 +89,7 @@ END\r\n
 function response_decode($reps,&$err)
 {
     $repl=strlen($reps);
-    if(substr($reps,0,5) != 'VALUE' || substr($reps,-5) != "END\r\n")
+    if(substr($reps,0,5) != "VALUE" || substr($reps,-5) != "END\r\n")
     {
         $err="invalid response protocol.";
         return false;
@@ -163,7 +163,7 @@ function uMemcache_mget($host,$port,$keys,&$err,$timeout=100000)
         return false;
     }
     $sfd=socket_create(AF_INET,SOCK_DGRAM,SOL_UDP);
-    socket_set_option($sfd,SOL_SOCKET,SO_RCVTIMEO,array('sec' => 0,'usec' => $timeout));
+    socket_set_option($sfd,SOL_SOCKET,SO_RCVTIMEO,array("sec" => 0,"usec" => $timeout));
     $ns=socket_sendto($sfd,$header.$cmd,$cmdl+$headerl,0,$host,$port);
 
     $rs=array();
@@ -199,12 +199,12 @@ function uMemcache_mget($host,$port,$keys,&$err,$timeout=100000)
         $err="incompletely response.";
         return false;
     }
-    if(substr($rstr,0,7)  == 'ERROR\r\n' || substr($rstr,0,12) == "CLIENT_ERROR" || substr($rstr,0,12) == "SERVER_ERROR")
+    if(substr($rstr,0,7)  == "ERROR\r\n" || substr($rstr,0,12) == "CLIENT_ERROR" || substr($rstr,0,12) == "SERVER_ERROR")
     {
         $err=trim($rstr);
         return false;
     }
-    else if(substr($rstr,0,5) == 'VALUE')
+    else if(substr($rstr,0,5) == "VALUE")
     {
         return response_decode($rstr,$err);
     }
