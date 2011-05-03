@@ -218,7 +218,7 @@ $val.=$val;
 $val.=$val;
 $val.=$val;
 $val.=$val;
-
+while(1){
 for($nkey=0; $nkey < 110;$nkey++)
 {
     $keys=array();
@@ -238,8 +238,9 @@ for($nkey=0; $nkey < 110;$nkey++)
     }
     else
     {
-        var_dump(array_combine($keys,$ret));
+        //var_dump(array_combine($keys,$ret));
     }
+}
 }
 
 ?>
