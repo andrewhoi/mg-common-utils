@@ -29,7 +29,7 @@
 #include "ae.h"
 #include "anet.h"
 
-#define REDIS_VERSION "2.0.4"
+#define REDIS_VERSION "3.0.0"
 
 /* Error codes */
 #define REDIS_OK                0
@@ -50,6 +50,9 @@
 #define REDIS_NOTUSED(V) ((void) V)
 #define redisAssert assert
 
+#define READ_BUF_LEN 64
+#define WRITE_BUF_LEN 512
+
 /* Global server state structure */
 struct RedisServer {
     pthread_t mainthread;
@@ -69,13 +72,8 @@ struct RedisServer {
     char *bindaddr;
     unsigned int maxclients;
     time_t unixtime;    /* Unix time sampled every second. */
-    FILE *devnull;
 };
 typedef struct RedisServer redisServer;
-
-#define READ_BUF_LEN 64
-#define WRITE_BUF_LEN 64
-#define MAX_READ_BUF_LEN 128
 
 struct RedisClient {
 	int fd;
@@ -98,7 +96,6 @@ static void initServer();
 static void setupSigSegvAction(void);
 static void version() ;
 static void usage();
-static void daemonize(void);
 static void sendReplyToClient(aeEventLoop *el, int fd, void *privdata, int mask);
 static void sigtermHandler(int sig);
 static void segvHandler(int sig, siginfo_t *info, void *secret);
@@ -106,6 +103,7 @@ static void freeClient(redisClient *c);
 static void resetClient(redisClient *c);
 static void oom(const char *msg);
 unsigned long long get_uuid();
+unsigned long long get_uuid_52bit();
 int ProcessRequestBuffer(redisClient *c);
 
 unsigned long long mid;
@@ -159,6 +157,7 @@ static void acceptHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
         close(cfd); /* May be already closed, just ingore errors */
         return;
     }
+    server.stat_numconnections++;
     if (server.maxclients && server.clients > server.maxclients) {
         char *err = "-ERR max number of clients reached\r\n";
         /* That's a best effort error message, don't check write errors */
@@ -168,7 +167,6 @@ static void acceptHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
         freeClient(c);
         return;
     }
-    server.stat_numconnections++;
 }
 
 static redisClient *createClient(int fd) {
@@ -212,7 +210,7 @@ static void readQueryFromClient(aeEventLoop *el, int fd, void *privdata, int mas
     }
     if (nread) {
         c->rlen+=nread;
-        if(c->rlen >= READ_BUF_LEN - 1) { //
+        if(c->rlen >= READ_BUF_LEN - 1) { 
             freeClient(c);
             return;
         }
@@ -232,6 +230,16 @@ unsigned long long get_uuid() {
     return uuid;
 }
 
+unsigned long long get_uuid_52bit() {
+    unsigned long long uuid= (unsigned long long)time(NULL);
+    uuid-=947490351;
+    uuid <<= 23;
+    uuid += mid << 19;
+    ++sid;
+    uuid+=sid % ( 1 << 19);
+    return uuid;
+}
+
 int ProcessRequestBuffer(redisClient *c) {
     char *rbuf=c->rbuf;
     int rlen=c->rlen;
@@ -245,7 +253,13 @@ int ProcessRequestBuffer(redisClient *c) {
         return -2;
     }
     if(strncasecmp(rbuf,"get ",4) == 0 ) {
-        snprintf(c->wbuf,127,"VALUE uuid 0 19\r\n%llu\r\nEND\r\n",get_uuid());
+        snprintf(c->wbuf,WRITE_BUF_LEN-1,"VALUE uuid 0 16\r\n%llu\r\nEND\r\n",get_uuid_52bit());
+        c->wlen=strlen(c->wbuf);
+        server.stat_numcommands++;
+        return 1;
+    }
+    if(strncasecmp(rbuf,"stats ",4) == 0 ) {
+        snprintf(c->wbuf,WRITE_BUF_LEN-1,"STAT uniqueid %llu\r\nSTAT cmd_get %lld\r\nSTAT curr_connections %u\r\nSTAT total_connections %lld\r\nEND\r\n",mid,server.stat_numcommands,server.clients,server.stat_numconnections);
         c->wlen=strlen(c->wbuf);
         return 1;
     }
@@ -260,6 +274,7 @@ static void processInputBuffer(redisClient *c) {
     }
     if(v == -2) { //QUIT command
         freeClient(c);
+        return;
     }
     if(v == 0) { //not enough data
         return;
@@ -355,31 +370,6 @@ static void resetClient(redisClient *c) {
         readQueryFromClient, c);
 }
 
-static void daemonize(void) {
-    int fd;
-    FILE *fp;
-
-    if (fork() != 0) exit(0); /* parent exits */
-    setsid(); /* create a new session */
-
-    /* Every output goes to /dev/null. If Redis is daemonized but
-     * the 'logfile' is set to 'stdout' in the configuration file
-     * it will not log at all. */
-    if ((fd = open("/dev/null", O_RDWR, 0)) != -1) {
-        dup2(fd, STDIN_FILENO);
-        dup2(fd, STDOUT_FILENO);
-        dup2(fd, STDERR_FILENO);
-        if (fd > STDERR_FILENO) close(fd);
-    }
-    /* Try to write the pid file */
-    fp = fopen(server.pidfile,"w");
-    if (fp) {
-        fprintf(fp,"%d\n",getpid());
-        fclose(fp);
-    }
-}
-
-
 static void initServerConfig() {
     server.port = REDIS_SERVERPORT;
     server.verbosity = REDIS_FATAL ;
@@ -397,11 +387,6 @@ static void initServer() {
     setupSigSegvAction();
 
     server.mainthread = pthread_self();
-    server.devnull = fopen("/dev/null","w");
-    if (server.devnull == NULL) {
-        redisLog(REDIS_WARNING, "Can't open /dev/null: %s", server.neterr);
-        exit(1);
-    }
     server.clients = 0;
     server.el = aeCreateEventLoop();
     server.fd = anetTcpServer(server.neterr, server.port, server.bindaddr);
@@ -413,7 +398,6 @@ static void initServer() {
     server.stat_numconnections = 0;
     server.stat_starttime = time(NULL);
     server.unixtime = time(NULL);
-    //aeCreateTimeEvent(server.el, 1, serverCron, NULL, NULL);
     if (aeCreateFileEvent(server.el, server.fd, AE_READABLE,
         acceptHandler, NULL) == AE_ERR) oom("creating file event");
 
@@ -431,7 +415,7 @@ static void usage(void) {
            "-d            run as a daemon\n"
            "-c <num>      max simultaneous connections (default: 1024)\n"
            "-v            verbose (print errors/warnings while in event loop)\n"
-           "-u <num>      the unique server id, must be a number between 1 and 255\n"
+           "-u <num>      the unique server id, must be a number between 0 and 15\n"
            );
     return;
 }
@@ -440,7 +424,7 @@ int main(int argc, char **argv) {
     REDIS_NOTUSED(argc);
     REDIS_NOTUSED(argv);
     initServerConfig();
-    mid=0;
+    mid=10000;
     sid=0;
     int c;
     /* process arguments */
@@ -462,8 +446,8 @@ int main(int argc, char **argv) {
             break;
         case 'u':
             mid= atoi(optarg);
-            if (mid < 1 || mid > 255) {
-                fprintf(stderr, "mid must be a number between 1 and 255.\n");
+            if (mid < 0 || mid > 15) {
+                fprintf(stderr, "mid must be a number between 0 and 15.\n");
                 return 1;
             }
             break;
@@ -486,11 +470,11 @@ int main(int argc, char **argv) {
             return 1;
         }
     }
-    if (mid < 1 || mid > 255) {
-        fprintf(stderr, "mid must be a number between 1 and 255.\n");
+    if (mid < 0 || mid > 15) {
+        fprintf(stderr, "mid must be a number between 0 and 15.\n");
         return 1;
     }
-    if (server.daemonize) daemonize();
+    if (server.daemonize) daemon(0,0);
     redisLog(REDIS_NOTICE,"Server started, Redis version " REDIS_VERSION);
     initServer();
     redisLog(REDIS_NOTICE,"The server is now ready to accept connections on port %d", server.port);
