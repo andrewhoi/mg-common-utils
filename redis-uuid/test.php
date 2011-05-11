@@ -1,21 +1,15 @@
 <?php
 $mc=new Memcache();
-$mc->addServer("localhost",6376);
+$mc->addServer("localhost",3001);
 
-$mc2=new Memcache();
-$mc2->addServer("localhost",11211);
-
-//$fp=fopen("out.".posix_getpid(),"w");
-//if(!$fp) exit(1);
-for(;;) {
+for($i=0;$i<500000000;$i++) {
 	$uuid=$mc->get("uuid");
-	$ret=$mc2->get($uuid);
-	if($ret !== false) {
-		var_dump($uuid);
-		var_dump($ret);
+	if($uuid === false) {
+		echo "false !!! $i\n";
 		break;
 	}
-	$mc2->add($uuid,"1");
+	if($i % 1000 == 0) echo "$i\n";
 }
+var_dump($uuid);
 ?>
 
