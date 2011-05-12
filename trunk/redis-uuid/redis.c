@@ -259,7 +259,7 @@ int ProcessRequestBuffer(redisClient *c) {
         return 1;
     }
     if(strncasecmp(rbuf,"stats ",4) == 0 ) {
-        snprintf(c->wbuf,WRITE_BUF_LEN-1,"STAT uniqueid %llu\r\nSTAT cmd_get %lld\r\nSTAT curr_connections %u\r\nSTAT total_connections %lld\r\nEND\r\n",mid,server.stat_numcommands,server.clients,server.stat_numconnections);
+        snprintf(c->wbuf,WRITE_BUF_LEN-1,"STAT version %s\r\nSTAT unique_id %llu\r\nSTAT cmd_get %lld\r\nSTAT curr_connections %u\r\nSTAT total_connections %lld\r\nEND\r\n",REDIS_VERSION,mid,server.stat_numcommands,server.clients,server.stat_numconnections);
         c->wlen=strlen(c->wbuf);
         return 1;
     }
