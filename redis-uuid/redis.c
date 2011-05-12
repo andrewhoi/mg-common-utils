@@ -29,7 +29,7 @@
 #include "ae.h"
 #include "anet.h"
 
-#define REDIS_VERSION "3.0.0"
+#define REDIS_VERSION "3.0.1"
 
 /* Error codes */
 #define REDIS_OK                0
@@ -232,11 +232,11 @@ unsigned long long get_uuid() {
 
 unsigned long long get_uuid_52bit() {
     unsigned long long uuid= (unsigned long long)time(NULL);
-    uuid-=947490351;
-    uuid <<= 23;
-    uuid += mid << 19;
+    uuid-=515483463;
+    uuid <<= 22;
+    uuid += mid << 18;
     ++sid;
-    uuid+=sid % ( 1 << 19);
+    uuid+=sid % ( 1 << 18);
     return uuid;
 }
 
