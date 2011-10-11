@@ -91,7 +91,7 @@ int main(int argc,char **argv) {
     int  port=LISTEN_PORT;
     char host[64];
     snprintf(host,63,"%s","0.0.0.0");
-    snprintf(server_host,63,"%s","106.187.41.101");
+    snprintf(server_host,63,"%s","10.10.10.10");
     while((ch = getopt(argc, argv, "H:P:p:dh")) != -1) {
         switch (ch) {
             case 'H':
