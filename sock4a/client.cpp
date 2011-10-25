@@ -154,6 +154,15 @@ void *sock4aWorker(void *arg) {
 
     deQueue(peer_fd);
     
+    pfds[0].fd=peer_fd;
+    pfds[0].events=POLLIN;
+    pfds[0].revents=0;
+    int tr=poll(pfds,1,1);
+    if(tr > 0) {
+        cerr << "sock4aWorker:deQueue peer_fd has problem read." << endl;
+        peer_fd=connectToServer();
+    }
+    
     pfds[0].fd=cfd;
     pfds[0].events=POLLIN;
     pfds[0].revents=0;
