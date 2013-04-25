@@ -16,6 +16,7 @@ public class Sock4a
             Socket browser=server.AcceptSocket();
             Pipe p=new Pipe(browser);
             Thread t=new Thread(new ThreadStart(p.run));
+            t.IsBackground=true;
             t.Start();
         }
     }
